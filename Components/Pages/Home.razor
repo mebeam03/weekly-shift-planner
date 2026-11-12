@@ -1,0 +1,446 @@
+@page "/"
+@inject ScheduleStore Store
+
+<PageTitle>Weekly Planner | ShiftPlanner</PageTitle>
+
+<div class="app-shell">
+    <header class="topbar">
+        <div class="wordmark">ShiftPlanner<span>.</span></div>
+        <div class="save-indicator"><span class="save-dot"></span> Changes saved automatically</div>
+    </header>
+
+    <section class="page-intro">
+        <div>
+            <h1>Weekly Planner</h1>
+        </div>
+        <div class="week-control" aria-label="Select schedule week">
+            <button type="button" aria-label="Previous week" @onclick="PreviousWeek">&#8592;</button>
+            <strong>@WeekLabel</strong>
+            <button type="button" aria-label="Next week" @onclick="NextWeek">&#8594;</button>
+        </div>
+    </section>
+
+    <section class="stats-grid" aria-label="Weekly totals">
+        <div class="stat-card">
+            <span>Scheduled shifts</span>
+            <strong>@WeekShifts.Count</strong>
+        </div>
+        <div class="stat-card alert-stat">
+            <span>Uncovered hours</span>
+            <strong>@UncoveredHours.ToString("0.#")<em> hrs</em></strong>
+        </div>
+        <div class="stat-card">
+            <span>Hours assigned</span>
+            <strong>@TotalScheduledHours.ToString("0.#")<em> hrs</em></strong>
+        </div>
+        <div class="stat-card">
+            <span>Employees</span>
+            <strong>@Employees.Count</strong>
+        </div>
+    </section>
+
+    <section class="calendar-panel" aria-labelledby="calendar-title">
+        <div class="calendar-header">
+            <h2 id="calendar-title">Calendar</h2>
+            <div class="legend">
+                <span><i class="legend-dot assigned"></i> Scheduled</span>
+                <span><i class="legend-dot open"></i> Uncovered</span>
+                <span class="calendar-hint">Select an hour to add a shift</span>
+            </div>
+        </div>
+        <div class="calendar-scroll">
+            <div class="timeline-grid">
+                <div class="time-column">
+                    <div class="time-column-head"></div>
+                    <div class="time-rail" style="height:@TimelineHeightPx">
+                        @for (var hour = TimelineStartHour; hour <= TimelineEndHour; hour++)
+                        {
+                            var labelHour = hour;
+                            <span style="@HourLabelStyle(labelHour)">@FormatHour(labelHour)</span>
+                        }
+                    </div>
+                    <div class="time-column-footer"></div>
+                </div>
+                @for (var i = 0; i < 7; i++)
+                {
+                    var dayNumber = i;
+                    var date = WeekStart.AddDays(dayNumber);
+                    var shifts = PlaceShifts(date);
+                    var gaps = Store.GetCoverageGaps(date);
+                    var window = Store.GetCoverageWindow(date);
+                    <article class="timeline-day @(dayNumber == dayIndex ? "selected" : "")" @key="date">
+                        <div class="timeline-day-head">
+                            <strong>@date.ToString("ddd") <span>@date.Day</span></strong>
+                            @if (gaps.Count == 0)
+                            {
+                                <span class="day-status covered">Covered</span>
+                            }
+                            else
+                            {
+                                <span class="day-status uncovered">@gaps.Sum(g => g.Hours).ToString("0.#")h open</span>
+                            }
+                        </div>
+                        <div class="timeline-track" style="height:@TimelineHeightPx">
+                            @for (var hour = TimelineStartHour; hour < TimelineEndHour; hour++)
+                            {
+                                var slotHour = hour;
+                                var slotLabel = $"Schedule {date:dddd} at {FormatHour(slotHour)}";
+                                <a href="#assign-shift" class="hour-slot" style="@HourSlotStyle(slotHour)"
+                                   aria-label="@slotLabel" title="@slotLabel"
+                                   @onclick="() => ChooseSlot(dayNumber, slotHour)"><span>+</span></a>
+                            }
+                            @foreach (var gap in gaps)
+                            {
+                                <div class="gap-event" style="@TimeBlockStyle(gap.Start, gap.End)">
+                                    <span>Uncovered</span>
+                                    @if (gap.Hours >= 1)
+                                    {
+                                        <small>@FormatShort(gap.Start)–@FormatShort(gap.End)</small>
+                                    }
+                                </div>
+                            }
+                            @foreach (var placed in shifts)
+                            {
+                                var shift = placed.Shift;
+                                <div class="shift-event" style="@ShiftEventStyle(placed)" @key="shift.Id">
+                                    <button type="button" title="Remove shift" aria-label="Remove shift for @shift.EmployeeName"
+                                            @onclick="() => RemoveShift(shift.Id)">&#215;</button>
+                                    <strong>@shift.EmployeeName</strong>
+                                    <small>@FormatShort(shift.Start)–@FormatShort(shift.End)</small>
+                                </div>
+                            }
+                        </div>
+                        <a href="#coverage-settings" class="timeline-day-footer" @onclick="() => ChooseDay(dayNumber)">
+                            @FormatShort(window.Start)–@FormatShort(window.End) · Edit
+                        </a>
+                    </article>
+                }
+            </div>
+        </div>
+    </section>
+
+    <div class="work-area">
+        <section class="panel shift-form-panel" id="assign-shift">
+            <div class="panel-heading">
+                <h2>Assign a shift</h2>
+            </div>
+            <form @onsubmit="AddShift" @onsubmit:preventDefault @formname="AssignShift">
+                <div class="field-row">
+                    <div class="field">
+                        <label for="shift-employee">Employee</label>
+                        <select id="shift-employee" @bind="selectedEmployeeId" disabled="@(Employees.Count == 0)">
+                            @if (Employees.Count == 0)
+                            {
+                                <option value="">Add an employee first</option>
+                            }
+                            @foreach (var employee in Employees)
+                            {
+                                <option value="@employee.Id">@employee.Name</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="shift-day">Day</label>
+                        <select id="shift-day" value="@dayIndex" @onchange="OnDayChanged">
+                            @for (var i = 0; i < 7; i++)
+                            {
+                                <option value="@i">@WeekStart.AddDays(i).ToString("ddd, MMM d")</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+                <div class="field-row">
+                    <div class="field">
+                        <label for="shift-start">Start time</label>
+                        <input id="shift-start" type="time" @bind="startTime" required />
+                    </div>
+                    <div class="field">
+                        <label for="shift-end">End time</label>
+                        <input id="shift-end" type="time" @bind="endTime" required />
+                    </div>
+                </div>
+                <button class="primary-button" type="submit" disabled="@(Employees.Count == 0)">+ Add shift</button>
+                @if (!string.IsNullOrWhiteSpace(shiftMessage))
+                {
+                    <p class="form-message @(shiftSucceeded ? "success" : "error")" role="status">@shiftMessage</p>
+                }
+            </form>
+        </section>
+
+        <div class="right-stack">
+            <section class="panel coverage-panel" id="coverage-settings">
+                <div class="panel-heading">
+                    <h2>Coverage hours</h2>
+                </div>
+                <form @onsubmit="SaveCoverage" @onsubmit:preventDefault @formname="CoverageHours">
+                    <div class="selected-date">@SelectedDate.ToString("dddd, MMM d")</div>
+                    <div class="field-row">
+                        <div class="field"><label for="coverage-start">Coverage starts</label><input id="coverage-start" type="time" @bind="coverageStart" required /></div>
+                        <div class="field"><label for="coverage-end">Coverage ends</label><input id="coverage-end" type="time" @bind="coverageEnd" required /></div>
+                    </div>
+                    <button class="outline-button" type="submit">Save coverage hours</button>
+                    @if (!string.IsNullOrWhiteSpace(coverageMessage))
+                    {
+                        <p class="form-message @(coverageSucceeded ? "success" : "error")" role="status">@coverageMessage</p>
+                    }
+                </form>
+            </section>
+
+            <section class="panel team-panel">
+                <div class="panel-heading">
+                    <h2>Employees</h2>
+                    <span class="count-pill">@Employees.Count total</span>
+                </div>
+                <form class="employee-form" @onsubmit="AddEmployee" @onsubmit:preventDefault @formname="AddEmployee">
+                    <label class="sr-only" for="employee-name">Employee name</label>
+                    <input id="employee-name" placeholder="New employee name" @bind="newEmployeeName" maxlength="50" required />
+                    <button class="outline-button" type="submit">Add</button>
+                </form>
+                @if (!string.IsNullOrWhiteSpace(employeeMessage))
+                {
+                    <p class="form-message error employee-error" role="status">@employeeMessage</p>
+                }
+                <ul class="employee-list">
+                    @foreach (var employee in Employees)
+                    {
+                        <li @key="employee.Id">
+                            <div class="employee-identity">
+                                <span class="avatar">@employee.Name[0]</span>
+                                <span><strong>@employee.Name</strong><small>@HoursFor(employee.Id).ToString("0.#") hours this week</small></span>
+                            </div>
+                            @if (employeeToRemove == employee.Id)
+                            {
+                                <span class="confirm-actions">
+                                    <button type="button" @onclick="() => ConfirmRemoveEmployee(employee.Id)">Confirm</button>
+                                    <button type="button" @onclick="CancelRemoveEmployee">Cancel</button>
+                                </span>
+                            }
+                            else
+                            {
+                                <button type="button" class="text-button" @onclick="() => AskRemoveEmployee(employee.Id)">Remove</button>
+                            }
+                        </li>
+                    }
+                </ul>
+                @if (employeeToRemove is not null)
+                {
+                    <p class="remove-note">This also removes the employee's shifts.</p>
+                }
+            </section>
+        </div>
+    </div>
+</div>
+
+@code {
+    private DateOnly WeekStart;
+    private string selectedEmployeeId = "";
+    private string newEmployeeName = "";
+    private TimeOnly? startTime = new(10, 0);
+    private TimeOnly? endTime = new(16, 0);
+    private TimeOnly? coverageStart = new(10, 0);
+    private TimeOnly? coverageEnd = new(22, 0);
+    private int dayIndex;
+    private string? shiftMessage;
+    private bool shiftSucceeded;
+    private string? coverageMessage;
+    private bool coverageSucceeded;
+    private string? employeeMessage;
+    private Guid? employeeToRemove;
+
+    private List<Employee> Employees => Store.GetEmployees();
+    private List<ScheduledShift> WeekShifts => Store.GetWeek(WeekStart);
+    private double TotalScheduledHours => WeekShifts.Sum(s => s.Hours);
+    private double UncoveredHours => Enumerable.Range(0, 7)
+        .Sum(i => Store.GetCoverageGaps(WeekStart.AddDays(i)).Sum(g => g.Hours));
+    private DateOnly SelectedDate => WeekStart.AddDays(dayIndex);
+    private string WeekLabel => $"{WeekStart:MMM d} – {WeekStart.AddDays(6):MMM d, yyyy}";
+    private const int HourHeight = 54;
+    private int TimelineStartHour
+    {
+        get
+        {
+            var start = Enumerable.Range(0, 7)
+                .Min(i => Store.GetCoverageWindow(WeekStart.AddDays(i)).Start.Hour);
+            return WeekShifts.Count == 0 ? start : Math.Min(start, WeekShifts.Min(s => s.Start.Hour));
+        }
+    }
+    private int TimelineEndHour
+    {
+        get
+        {
+            var end = Enumerable.Range(0, 7)
+                .Max(i => CeilingHour(Store.GetCoverageWindow(WeekStart.AddDays(i)).End));
+            return WeekShifts.Count == 0 ? end : Math.Max(end, WeekShifts.Max(s => CeilingHour(s.End)));
+        }
+    }
+    private string TimelineHeightPx => $"{(TimelineEndHour - TimelineStartHour) * HourHeight}px";
+
+    protected override void OnInitialized()
+    {
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        WeekStart = today.AddDays(-(((int)today.DayOfWeek + 6) % 7));
+        selectedEmployeeId = Employees.FirstOrDefault()?.Id.ToString() ?? "";
+        dayIndex = ((int)today.DayOfWeek + 6) % 7;
+        LoadCoverageWindow();
+    }
+
+    private void PreviousWeek() => ChangeWeek(-7);
+    private void NextWeek() => ChangeWeek(7);
+
+    private void ChangeWeek(int days)
+    {
+        WeekStart = WeekStart.AddDays(days);
+        LoadCoverageWindow();
+        shiftMessage = null;
+    }
+
+    private void OnDayChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var newDay) && newDay is >= 0 and <= 6)
+            ChooseDay(newDay);
+    }
+
+    private void ChooseDay(int selectedDay)
+    {
+        dayIndex = selectedDay;
+        LoadCoverageWindow();
+        shiftMessage = null;
+    }
+
+    private void ChooseSlot(int selectedDay, int hour)
+    {
+        ChooseDay(selectedDay);
+        startTime = new TimeOnly(hour, 0);
+        endTime = hour == 23 ? new TimeOnly(23, 59) : new TimeOnly(hour + 1, 0);
+    }
+
+    private void LoadCoverageWindow()
+    {
+        var window = Store.GetCoverageWindow(SelectedDate);
+        coverageStart = window.Start;
+        coverageEnd = window.End;
+        coverageMessage = null;
+    }
+
+    private void SaveCoverage()
+    {
+        coverageSucceeded = false;
+        if (!coverageStart.HasValue || !coverageEnd.HasValue)
+        {
+            coverageMessage = "Enter valid start and end times.";
+            return;
+        }
+
+        coverageMessage = Store.SetCoverageWindow(SelectedDate, coverageStart.Value, coverageEnd.Value);
+        if (coverageMessage is null)
+        {
+            coverageSucceeded = true;
+            coverageMessage = "Coverage hours saved.";
+        }
+    }
+
+    private void AddShift()
+    {
+        shiftSucceeded = false;
+        if (!Guid.TryParse(selectedEmployeeId, out var employeeId) ||
+            !startTime.HasValue || !endTime.HasValue)
+        {
+            shiftMessage = "Select an employee and enter valid times.";
+            return;
+        }
+
+        shiftMessage = Store.AddShift(employeeId, SelectedDate, startTime.Value, endTime.Value);
+        if (shiftMessage is null)
+        {
+            shiftSucceeded = true;
+            shiftMessage = "Shift added successfully.";
+        }
+    }
+
+    private void AddEmployee()
+    {
+        employeeMessage = Store.AddEmployee(newEmployeeName);
+        if (employeeMessage is null)
+        {
+            selectedEmployeeId = Employees.First(e => string.Equals(
+                e.Name, newEmployeeName.Trim(), StringComparison.OrdinalIgnoreCase)).Id.ToString();
+            newEmployeeName = "";
+        }
+    }
+
+    private void RemoveShift(Guid id)
+    {
+        Store.RemoveShift(id);
+        shiftMessage = null;
+    }
+
+    private void AskRemoveEmployee(Guid id) => employeeToRemove = id;
+    private void CancelRemoveEmployee() => employeeToRemove = null;
+
+    private void ConfirmRemoveEmployee(Guid id)
+    {
+        Store.RemoveEmployee(id);
+        employeeToRemove = null;
+        employeeMessage = null;
+        shiftMessage = null;
+        if (!Employees.Any(e => e.Id.ToString() == selectedEmployeeId))
+            selectedEmployeeId = Employees.FirstOrDefault()?.Id.ToString() ?? "";
+    }
+
+    private double HoursFor(Guid id) => WeekShifts.Where(s => s.EmployeeId == id).Sum(s => s.Hours);
+
+    // Reuse available horizontal lanes when two employees work at the same time.
+    private sealed record PlacedShift(ScheduledShift Shift, int Lane, int LaneCount);
+
+    private List<PlacedShift> PlaceShifts(DateOnly date)
+    {
+        var shifts = WeekShifts.Where(s => s.Date == date)
+            .OrderBy(s => s.Start).ThenBy(s => s.End).ToList();
+        var laneEnds = new List<TimeOnly>();
+        var placed = new List<(ScheduledShift Shift, int Lane)>();
+
+        foreach (var shift in shifts)
+        {
+            int lane = laneEnds.FindIndex(end => end <= shift.Start);
+            if (lane == -1)
+            {
+                lane = laneEnds.Count;
+                laneEnds.Add(shift.End);
+            }
+            else
+            {
+                laneEnds[lane] = shift.End;
+            }
+            placed.Add((shift, lane));
+        }
+
+        int laneCount = Math.Max(1, laneEnds.Count);
+        return placed.Select(p => new PlacedShift(p.Shift, p.Lane, laneCount)).ToList();
+    }
+
+    private static int CeilingHour(TimeOnly time) => time.Hour + (time.Minute > 0 ? 1 : 0);
+    private static string FormatHour(int hour) => FormatShort(new TimeOnly(hour % 24, 0));
+    private string HourLabelStyle(int hour) => $"top:{(hour - TimelineStartHour) * HourHeight}px";
+    private string HourSlotStyle(int hour) =>
+        $"top:{(hour - TimelineStartHour) * HourHeight}px;height:{HourHeight}px";
+
+    private string TimeBlockStyle(TimeOnly start, TimeOnly end)
+    {
+        double top = (start.ToTimeSpan().TotalHours - TimelineStartHour) * HourHeight;
+        double height = (end - start).TotalHours * HourHeight;
+        return FormattableString.Invariant($"top:{top:0.##}px;height:{Math.Max(3, height):0.##}px;");
+    }
+
+    private string ShiftEventStyle(PlacedShift placed)
+    {
+        double left = 100.0 * placed.Lane / placed.LaneCount;
+        double width = 100.0 / placed.LaneCount;
+        return TimeBlockStyle(placed.Shift.Start, placed.Shift.End)
+            + FormattableString.Invariant(
+                $"left:calc({left:0.##}% + 2px);width:calc({width:0.##}% - 4px);");
+    }
+
+    private static string FormatShort(TimeOnly time) => time.Minute == 0
+        ? time.ToString("htt").ToLowerInvariant()
+        : time.ToString("h:mmtt").ToLowerInvariant();
+}

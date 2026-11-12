@@ -38,9 +38,3 @@ Coverage tracking currently identifies periods when no employees are scheduled, 
 3. Open the project folder in a terminal.
 4. Run `dotnet run`.
 5. Open `http://localhost:5172` in your browser.
-
-## Project Scope
-
-This project demonstrates C# programming fundamentals, including classes, collections, conditional logic, time calculations, and file handling.
-
-It was developed as a small-scale scheduling application rather than a complete workforce management system. Employee records and schedules use fictional demonstration data.
